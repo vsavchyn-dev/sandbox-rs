@@ -1,2 +1,5 @@
+## Compilation target
 target/
-Cargo.lock
+
+## File System
+.DS_Store

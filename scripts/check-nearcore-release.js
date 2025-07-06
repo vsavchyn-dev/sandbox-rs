@@ -4,13 +4,7 @@ const fs = require('fs');
 const path = require('path');
 
 const NEARCORE_REPO = 'near/nearcore';
-const LIB_RS_PATH = 'crate/src/lib.rs';
-const GET_BINARY_TS_PATH = 'npm/src/getBinary.ts';
-
-const FILES_TO_UPDATE = {
-    libRs: updateLibRs,
-    getBinaryTs: updateGetBinaryTs
-};
+const LIB_RS_PATH = 'src/lib.rs';
 
 async function makeRequest(url) {
     const response = await fetch(url);
@@ -82,24 +76,6 @@ function updateLibRs(newVersion, releaseDate) {
     }
 }
 
-function updateGetBinaryTs(newVersion) {
-    try {
-        const getBinaryPath = path.join(process.cwd(), GET_BINARY_TS_PATH);
-        let content = fs.readFileSync(getBinaryPath, 'utf8');
-
-        content = content.replace(
-            /\/nearcore\/[^\/]+\/[^\/]+\/near-sandbox\.tar\.gz/,
-            `/nearcore/\${platform}-\${arch}/${newVersion}/near-sandbox.tar.gz`
-        );
-
-        fs.writeFileSync(getBinaryPath, content, 'utf8');
-        console.log(`Updated ${GET_BINARY_TS_PATH} with version ${newVersion}`);
-    } catch (error) {
-        console.error('Error updating getBinary.ts:', error.message);
-        throw error;
-    }
-}
-
 async function main() {
     console.log('🔍 Checking for NEAR Core updates...\n');
 
@@ -114,10 +90,7 @@ async function main() {
 
         console.log(`\n🔄 Update needed: ${currentVersion} → ${latestVersion}\n`);
 
-        Object.entries(FILES_TO_UPDATE).forEach(([key, updateFunction]) => {
-            console.log(`Updating ${key}...`);
-            updateFunction(latestVersion, releaseDate);
-        });
+        updateLibRs(newVersion, releaseDate);
 
         console.log('\n✅ Files updated successfully. Changes will be detected by git status.');
     } catch (error) {
