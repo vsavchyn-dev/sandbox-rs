@@ -10,6 +10,10 @@ use tracing::info;
 
 pub mod config;
 pub use config::{GenesisAccount, SandboxConfig, SandboxConfigError};
+pub use config::{
+    DEFAULT_GENESIS_ACCOUNT, DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY,
+    DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY,
+};
 
 use crate::SandboxError;
 

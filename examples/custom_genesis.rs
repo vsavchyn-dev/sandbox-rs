@@ -5,7 +5,7 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let  config = SandboxConfig {
+    let config = SandboxConfig {
         additional_genesis: Some(json!({
             "epoch_length": 100,
         })),

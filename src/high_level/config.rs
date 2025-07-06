@@ -108,6 +108,10 @@ where
 }
 
 /// Set extra configs for the sandbox with custom configuration.
+///
+/// # Arguments
+/// * `home_dir` - path for home directory of neard
+/// * `config` - config, with which neard configuration will be overwritten
 pub(crate) fn set_sandbox_configs_with_config(
     home_dir: impl AsRef<Path>,
     config: &SandboxConfig,

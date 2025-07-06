@@ -11,6 +11,12 @@ pub mod sync;
 // Re-export important types for better user experience
 pub use high_level::{GenesisAccount, Sandbox, SandboxConfig};
 
+// Re-export default constants for better user experience
+pub use high_level::{
+    DEFAULT_GENESIS_ACCOUNT, DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY,
+    DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY,
+};
+
 // The current version of the sandbox node we want to point to.
 // Should be updated to the latest release of nearcore.
 // Currently pointing to nearcore@v2.6.3 released on May 16, 2025
@@ -135,10 +141,9 @@ pub fn install_with_version(version: &str) -> Result<PathBuf, SandboxError> {
     // Download binary into temp dir
     let bin_name = format!("near-sandbox-{}", normalize_name(version));
     let dl_cache = Cache::at(&download_path(version));
-    // WARN: How is this checking for unsupported platform?
     let bin_path = bin_url(version).ok_or_else(|| {
         SandboxError::UnsupportedPlatformError(
-            "only linux-x86 and darwing-arm are supported".to_owned(),
+            "only linux-x86 and darwin-arm are supported".to_owned(),
         )
     })?;
     let dl = dl_cache
