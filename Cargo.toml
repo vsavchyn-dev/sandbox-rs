@@ -24,7 +24,7 @@ reqwest = "0.12.20"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
-near-api = "0.6"
+near-api = "0.6.1"
 
 [features]
 global_install = []
