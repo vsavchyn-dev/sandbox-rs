@@ -5,7 +5,7 @@ use serde_json::json;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let  config = SandboxConfig {
+    let config = SandboxConfig {
         additional_genesis: Some(json!({
             "epoch_length": 100,
         })),
@@ -17,6 +17,7 @@ async fn main() -> Result<()> {
                 balance: NearToken::from_near(1000).as_yoctonear(),
             },
         ],
+        rpc_port: Some(3030),
         ..Default::default()
     };
 

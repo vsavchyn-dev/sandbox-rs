@@ -9,36 +9,83 @@ use tokio::process::Child;
 use tracing::info;
 
 pub mod config;
-pub use config::{GenesisAccount, SandboxConfig};
+pub use config::{GenesisAccount, SandboxConfig, SandboxConfigError};
+
+use crate::SandboxError;
 
 // Must be an IP address as `neard` expects socket address for network address.
 const DEFAULT_RPC_HOST: &str = "127.0.0.1";
+
+#[derive(thiserror::Error, Debug)]
+pub enum TcpError {
+    #[error("Error while binding listener to a port {0}: {1}")]
+    BindError(u16, std::io::Error),
+
+    #[error("Error while getting local address: {0}")]
+    LocalAddrError(std::io::Error),
+
+    #[error("Error while locking port file: {0}")]
+    LockingError(std::io::Error),
+}
 
 fn rpc_socket(port: u16) -> String {
     format!("{DEFAULT_RPC_HOST}:{}", port)
 }
 
 /// Request an unused port from the OS.
-async fn pick_unused_port() -> anyhow::Result<u16> {
+async fn pick_unused_port() -> Result<u16, SandboxError> {
     // Port 0 means the OS gives us an unused port
     // Important to use localhost as using 0.0.0.0 leads to users getting brief firewall popups to
     // allow inbound connections on MacOS.
     let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0);
-    let listener = TcpListener::bind(addr).await?;
-    let port = listener.local_addr()?.port();
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| TcpError::BindError(addr.port(), e))?;
+    let port = listener
+        .local_addr()
+        .map_err(TcpError::LocalAddrError)?
+        .port();
     Ok(port)
 }
 
 /// Acquire an unused port and lock it for the duration until the sandbox server has
 /// been started.
-async fn acquire_unused_port() -> anyhow::Result<(u16, File)> {
+async fn acquire_unused_port() -> Result<(u16, File), SandboxError> {
     loop {
         let port = pick_unused_port().await?;
         let lockpath = std::env::temp_dir().join(format!("near-sandbox-port{}.lock", port));
-        let lockfile = File::create(lockpath)?;
+        let lockfile = File::create(lockpath).map_err(TcpError::LockingError)?;
         if lockfile.try_lock_exclusive().is_ok() {
             break Ok((port, lockfile));
         }
+    }
+}
+
+/// Try to acquire a specific port and lock it.
+/// Returns the port and lock file if successful.
+async fn try_acquire_specific_port(port: u16) -> Result<(u16, File), SandboxError> {
+    let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| TcpError::BindError(addr.port(), e))?;
+    let port = listener
+        .local_addr()
+        .map_err(TcpError::LocalAddrError)?
+        .port();
+
+    let lockpath = std::env::temp_dir().join(format!("near-sandbox-port{}.lock", port));
+    let lockfile = File::create(&lockpath).map_err(TcpError::LockingError)?;
+    lockfile
+        .try_lock_exclusive()
+        .map_err(TcpError::LockingError)?;
+
+    Ok((port, lockfile))
+}
+
+async fn acquire_or_lock_port(configured_port: Option<u16>) -> Result<(u16, File), SandboxError> {
+    match configured_port {
+        Some(port) => try_acquire_specific_port(port).await,
+        None => acquire_unused_port().await,
     }
 }
 
@@ -48,16 +95,34 @@ async fn acquire_unused_port() -> anyhow::Result<(u16, File)> {
 ///
 /// This is work-in-progress and not all the features are supported yet.
 pub struct Sandbox {
+    /// Home directory for sandbox instance. Will be cleaned up once Sandbox is dropped
     pub home_dir: TempDir,
+    /// URL that can be used to access RPC. In format of `http://127.0.0.1:{port}`
     pub rpc_addr: String,
+    /// File lock preventing other processes from using the same RPC port until this sandbox is started
     pub rpc_port_lock: File,
+    /// File lock preventing other processes from using the same network port until this sandbox is started
     pub net_port_lock: File,
     process: Child,
 }
 
 impl Sandbox {
     /// Start a new sandbox with the default near-sandbox-utils version.
-    pub async fn start_sandbox() -> anyhow::Result<Self> {
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use near_sandbox_utils::*;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Launch with default config and version
+    /// let sandbox = Sandbox::start_sandbox().await?;
+    /// println!("Sandbox RPC endpoint: {}", sandbox.rpc_addr);
+    /// // ... do your testing ...
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn start_sandbox() -> Result<Self, SandboxError> {
         Self::start_sandbox_with_config_and_version(
             SandboxConfig::default(),
             crate::DEFAULT_NEAR_SANDBOX_VERSION,
@@ -70,7 +135,20 @@ impl Sandbox {
     /// # Arguments
     /// * `version` - the version of the near-sandbox-utils to use.
     ///
-    pub async fn start_sandbox_with_version(version: &str) -> anyhow::Result<Self> {
+    /// # Exmaple:
+    ///
+    /// ```rust,no_run
+    /// use near_sandbox_utils::*;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Launch with default config
+    /// let sandbox = Sandbox::start_sandbox_with_version("2.6.3").await?;
+    /// println!("Sandbox RPC endpoint: {}", sandbox.rpc_addr);
+    /// // ... do your testing ...
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn start_sandbox_with_version(version: &str) -> Result<Self, SandboxError> {
         Self::start_sandbox_with_config_and_version(SandboxConfig::default(), version).await
     }
 
@@ -79,7 +157,31 @@ impl Sandbox {
     /// # Arguments
     /// * `config` - custom configuration for the sandbox
     ///
-    pub async fn start_sandbox_with_config(config: SandboxConfig) -> anyhow::Result<Self> {
+    /// # Example
+    ///
+    /// ``` rust,no_run
+    /// use near_sandbox_utils::*;
+    /// use serde_json::json;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut cfg = SandboxConfig::default();
+    /// cfg.rpc_port = Some(3030);
+    /// cfg.additional_genesis = Some(json!({ "epoch_length": 200 }));
+    /// cfg.additional_accounts = vec![
+    ///     GenesisAccount {
+    ///         account_id: "bob.near".parse().unwrap(),
+    ///         public_key: "ed25519:...".to_string(),
+    ///         private_key: "ed25519:...".to_string(),
+    ///         balance: 10_000u128 * 10u128.pow(24), // 10000 NEAR
+    ///     },
+    /// ];
+    ///
+    /// let sandbox = Sandbox::start_sandbox_with_config(cfg).await?;
+    /// println!("Custom sandbox running at {}", sandbox.rpc_addr);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub async fn start_sandbox_with_config(config: SandboxConfig) -> Result<Self, SandboxError> {
         Self::start_sandbox_with_config_and_version(config, crate::DEFAULT_NEAR_SANDBOX_VERSION)
             .await
     }
@@ -90,15 +192,39 @@ impl Sandbox {
     /// * `config` - custom configuration for the sandbox
     /// * `version` - the version of the near-sandbox-utils to use
     ///
+    /// # Example
+    ///
+    /// ``` rust,no_run
+    /// use near_sandbox_utils::*;
+    /// use serde_json::json;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut cfg = SandboxConfig::default();
+    /// cfg.rpc_port = Some(3030);
+    /// cfg.additional_genesis = Some(json!({ "epoch_length": 200 }));
+    /// cfg.additional_accounts = vec![
+    ///     GenesisAccount {
+    ///         account_id: "bob.near".parse().unwrap(),
+    ///         public_key: "ed25519:...".to_string(),
+    ///         private_key: "ed25519:...".to_string(),
+    ///         balance: 10_000u128 * 10u128.pow(24), // 10000 NEAR
+    ///     },
+    /// ];
+    ///
+    /// let sandbox = Sandbox::start_sandbox_with_config_and_version(cfg, "2.6.3").await?;
+    /// println!("Custom sandbox running at {}", sandbox.rpc_addr);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn start_sandbox_with_config_and_version(
         config: SandboxConfig,
         version: &str,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, SandboxError> {
         suppress_sandbox_logs_if_required();
         let home_dir = Self::init_home_dir_with_version(version).await?;
 
-        let (rpc_port, rpc_port_lock) = acquire_unused_port().await?;
-        let (net_port, net_port_lock) = acquire_unused_port().await?;
+        let (rpc_port, rpc_port_lock) = acquire_or_lock_port(config.rpc_port).await?;
+        let (net_port, net_port_lock) = acquire_or_lock_port(config.net_port).await?;
 
         let rpc_addr = rpc_socket(rpc_port);
         let net_addr = rpc_socket(net_port);
@@ -133,18 +259,19 @@ impl Sandbox {
         })
     }
 
-    async fn init_home_dir_with_version(version: &str) -> anyhow::Result<TempDir> {
-        let home_dir = tempfile::tempdir()?;
+    async fn init_home_dir_with_version(version: &str) -> Result<TempDir, SandboxError> {
+        let home_dir = tempfile::tempdir().map_err(SandboxError::FileError)?;
 
         let output = crate::init_with_version(&home_dir, version)?
             .wait_with_output()
-            .await?;
+            .await
+            .map_err(SandboxError::RuntimeError)?;
         info!(target: "sandbox", "sandbox init: {:?}", output);
 
         Ok(home_dir)
     }
 
-    async fn wait_until_ready(rpc: &str) -> anyhow::Result<()> {
+    async fn wait_until_ready(rpc: &str) -> Result<(), SandboxError> {
         let timeout_secs = match std::env::var("NEAR_RPC_TIMEOUT_SECS") {
             Ok(secs) => secs
                 .parse::<u64>()
@@ -160,9 +287,7 @@ impl Sandbox {
                 return Ok(());
             }
         }
-        Err(anyhow::anyhow!(
-            "Sandbox didn't start with the provided timeout"
-        ))
+        Err(SandboxError::TimeoutError)
     }
 }
 

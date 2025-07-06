@@ -25,6 +25,67 @@ pub const DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY: &str =
     "ed25519:5BGSaf6YjVm7565VzWQHNxoyEjwr3jUpRJSGjREvU9dB";
 pub const DEFAULT_GENESIS_ACCOUNT_BALANCE: u128 = 10_000u128 * 10u128.pow(24);
 
+#[derive(thiserror::Error, Debug)]
+pub enum SandboxConfigError {
+    #[error("Error while performing r/w on config file: {0}")]
+    FileError(std::io::Error),
+
+    #[error("Error while parsing config file: {0}")]
+    JsonParseError(#[from] serde_json::Error),
+
+    #[error("Invalid environment variables: {0}")]
+    EnvParseError(String),
+}
+
+#[cfg(feature = "generate")]
+pub(crate) fn random_account_id() -> String {
+    use rand::Rng;
+
+    let mut rng = rand::thread_rng();
+    let random_num = rng.gen_range(10000000000000usize..99999999999999);
+    let account_id = format!(
+        "sandbox-genesis-dev-acc-{}-{}",
+        chrono::Utc::now().format("%Y%m%d%H%M%S"),
+        random_num
+    );
+
+    account_id
+}
+
+/// Generates pseudo-random base58 encoded ed25519 secret and public keys
+///
+/// WARNING: Prefer using `SecretKey` and `PublicKey` from [`near_crypto`](https://crates.io/crates/near-crypto) or [`near_sandbox_utils::GenesisAccount::generate_random()`](near_sandbox_utils::GenesisAccount::generate_random())
+///
+/// ## Generating random key pair for genesis account:
+/// ```rust,no_run
+/// # fn example() {
+/// let (private_key, public_key) = near_sandbox_utils::random_key_pair();
+/// let custom_genesis = near_sandbox_utils::GenesisAccount {
+///     account_id: "alice",
+///     private_key,
+///     public_key,
+///     ..Default::default()
+/// }
+/// # }
+/// ```
+#[cfg(feature = "generate")]
+pub(crate) fn random_key_pair() -> (String, String) {
+    let mut rng = rand::rngs::OsRng;
+    let signing_key: [u8; ed25519_dalek::KEYPAIR_LENGTH] =
+        ed25519_dalek::SigningKey::generate(&mut rng).to_keypair_bytes();
+
+    let secret_key = format!(
+        "ed25519:{}",
+        bs58::encode(&signing_key.to_vec()).into_string()
+    );
+    let public_key = format!(
+        "ed25519:{}",
+        bs58::encode(&signing_key[ed25519_dalek::SECRET_KEY_LENGTH..].to_vec()).into_string()
+    );
+
+    (secret_key, public_key)
+}
+
 /// Genesis account configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisAccount {
@@ -32,6 +93,24 @@ pub struct GenesisAccount {
     pub public_key: String,
     pub private_key: String,
     pub balance: u128,
+}
+
+#[cfg(feature = "generate")]
+impl GenesisAccount {
+    /// Generates pseudo-random genesis account
+    ///
+    /// WARNING: Prefer using `GenesisAccount::default()` or defining `GenesisAccount` from a
+    /// scratch
+    pub fn generate_random() -> Self {
+        let (private_key, public_key) = random_key_pair();
+
+        Self {
+            account_id: random_account_id(),
+            public_key,
+            private_key,
+            balance: DEFAULT_GENESIS_ACCOUNT_BALANCE,
+        }
+    }
 }
 
 impl Default for GenesisAccount {
@@ -46,7 +125,7 @@ impl Default for GenesisAccount {
 }
 
 /// Configuration for the sandbox
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SandboxConfig {
     /// Maximum payload size for JSON RPC requests in bytes
     pub max_payload_size: Option<usize>,
@@ -58,33 +137,41 @@ pub struct SandboxConfig {
     pub additional_accounts: Vec<GenesisAccount>,
     /// Additional JSON configuration to merge with the genesis
     pub additional_genesis: Option<Value>,
+    /// Port that RPC will be bound to. Will be picked randomly if not set.
+    pub rpc_port: Option<u16>,
+    /// Port that Network will be bound to. Will be picked randomly if not set.
+    pub net_port: Option<u16>,
 }
 
 /// Overwrite the $home_dir/config.json file over a set of entries. `value` will be used per (key, value) pair
 /// where value can also be another dict. This recursively sets all entry in `value` dict to the config
 /// dict, and saves back into `home_dir` at the end of the day.
-fn overwrite(home_dir: impl AsRef<Path>, value: Value) -> anyhow::Result<()> {
+fn overwrite(home_dir: impl AsRef<Path>, value: Value) -> Result<(), SandboxConfigError> {
     let home_dir = home_dir.as_ref();
-    let config_file = File::open(home_dir.join("config.json"))?;
+    let config_file =
+        File::open(home_dir.join("config.json")).map_err(SandboxConfigError::FileError)?;
     let config = BufReader::new(config_file);
     let mut config: Value = serde_json::from_reader(config)?;
 
     json_patch::merge(&mut config, &value);
-    let config_file = File::create(home_dir.join("config.json"))?;
+    let config_file =
+        File::create(home_dir.join("config.json")).map_err(SandboxConfigError::FileError)?;
     serde_json::to_writer(config_file, &config)?;
 
     Ok(())
 }
 
 /// Parse an environment variable or return a default value.
-fn parse_env<T>(env_var: &str) -> anyhow::Result<Option<T>>
+fn parse_env<T>(env_var: &str) -> Result<Option<T>, SandboxConfigError>
 where
     T: std::str::FromStr,
     T::Err: std::error::Error + Send + Sync + 'static,
 {
     match std::env::var(env_var) {
         Ok(val) => {
-            let val = val.parse::<T>()?;
+            let val = val
+                .parse::<T>()
+                .map_err(|e| SandboxConfigError::EnvParseError(e.to_string()))?;
             Ok(Some(val))
         }
         Err(_err) => Ok(None),
@@ -92,10 +179,14 @@ where
 }
 
 /// Set extra configs for the sandbox with custom configuration.
+///
+/// # Arguments
+/// * `home_dir` - path for home directory of neard
+/// * `config` - config, with which neard configuration will be overwritten
 pub(crate) fn set_sandbox_configs_with_config(
     home_dir: impl AsRef<Path>,
     config: &SandboxConfig,
-) -> anyhow::Result<()> {
+) -> Result<(), SandboxConfigError> {
     let max_payload_size = config
         .max_payload_size
         .or_else(|| parse_env("NEAR_SANDBOX_MAX_PAYLOAD_SIZE").ok().flatten())
@@ -128,9 +219,13 @@ pub(crate) fn set_sandbox_configs_with_config(
 /// Overwrite the $home_dir/genesis.json file over a set of entries. `value` will be used per (key, value) pair
 /// where value can also be another dict. This recursively sets all entry in `value` dict to the config
 /// dict, and saves back into `home_dir` at the end of the day.
-fn overwrite_genesis(home_dir: impl AsRef<Path>, config: &SandboxConfig) -> anyhow::Result<()> {
+fn overwrite_genesis(
+    home_dir: impl AsRef<Path>,
+    config: &SandboxConfig,
+) -> Result<(), SandboxConfigError> {
     let home_dir = home_dir.as_ref();
-    let config_file = File::open(home_dir.join("genesis.json"))?;
+    let config_file =
+        File::open(home_dir.join("genesis.json")).map_err(SandboxConfigError::FileError)?;
     let config_reader = BufReader::new(config_file);
     let mut genesis: Value = serde_json::from_reader(config_reader)?;
     let genesis_obj = genesis.as_object_mut().expect("expected to be object");
@@ -194,7 +289,8 @@ fn overwrite_genesis(home_dir: impl AsRef<Path>, config: &SandboxConfig) -> anyh
         json_patch::merge(&mut genesis, additional_genesis);
     }
 
-    let config_file = File::create(home_dir.join("genesis.json"))?;
+    let config_file =
+        File::create(home_dir.join("genesis.json")).map_err(SandboxConfigError::FileError)?;
     serde_json::to_writer(config_file, &genesis)?;
     Ok(())
 }
@@ -203,7 +299,7 @@ fn overwrite_genesis(home_dir: impl AsRef<Path>, config: &SandboxConfig) -> anyh
 fn save_account_keys(
     home_dir: impl AsRef<Path>,
     accounts: &[GenesisAccount],
-) -> anyhow::Result<()> {
+) -> Result<(), SandboxConfigError> {
     let home_dir = home_dir.as_ref();
 
     for account in accounts {
@@ -214,16 +310,19 @@ fn save_account_keys(
         });
 
         let file_name = format!("{}.json", account.account_id);
-        let mut key_file = File::create(home_dir.join(&file_name))?;
+        let mut key_file =
+            File::create(home_dir.join(&file_name)).map_err(SandboxConfigError::FileError)?;
         let key_content = serde_json::to_string(&key_json)?;
-        key_file.write_all(key_content.as_bytes())?;
-        key_file.flush()?;
+        key_file
+            .write_all(key_content.as_bytes())
+            .map_err(SandboxConfigError::FileError)?;
+        key_file.flush().map_err(SandboxConfigError::FileError)?;
     }
 
     Ok(())
 }
 
-pub fn set_sandbox_genesis(home_dir: impl AsRef<Path>) -> anyhow::Result<()> {
+pub fn set_sandbox_genesis(home_dir: impl AsRef<Path>) -> Result<(), SandboxConfigError> {
     let config = SandboxConfig::default();
     set_sandbox_genesis_with_config(&home_dir, &config)
 }
@@ -231,7 +330,7 @@ pub fn set_sandbox_genesis(home_dir: impl AsRef<Path>) -> anyhow::Result<()> {
 pub fn set_sandbox_genesis_with_config(
     home_dir: impl AsRef<Path>,
     config: &SandboxConfig,
-) -> anyhow::Result<()> {
+) -> Result<(), SandboxConfigError> {
     overwrite_genesis(&home_dir, config)?;
 
     let mut all_accounts = vec![GenesisAccount::default()];

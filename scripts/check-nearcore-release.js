@@ -90,7 +90,7 @@ async function main() {
 
         console.log(`\n🔄 Update needed: ${currentVersion} → ${latestVersion}\n`);
 
-        updateLibRs(newVersion, releaseDate);
+        updateLibRs(latestVersion, releaseDate);
 
         console.log('\n✅ Files updated successfully. Changes will be detected by git status.');
     } catch (error) {
