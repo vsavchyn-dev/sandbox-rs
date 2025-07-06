@@ -9,33 +9,47 @@ use tokio::process::Child;
 use tracing::info;
 
 pub mod config;
-pub use config::{GenesisAccount, SandboxConfig};
+pub use config::{GenesisAccount, SandboxConfig, SandboxConfigError};
+
+use crate::SandboxError;
 
 // Must be an IP address as `neard` expects socket address for network address.
 const DEFAULT_RPC_HOST: &str = "127.0.0.1";
+
+#[derive(thiserror::Error, Debug)]
+pub enum TcpError {
+    #[error("Error while binding listener: {0}")]
+    BindError(std::io::Error),
+
+    #[error("Error while getting local address: {0}")]
+    LocalAddrError(std::io::Error),
+}
 
 fn rpc_socket(port: u16) -> String {
     format!("{DEFAULT_RPC_HOST}:{}", port)
 }
 
 /// Request an unused port from the OS.
-async fn pick_unused_port() -> anyhow::Result<u16> {
+async fn pick_unused_port() -> Result<u16, SandboxError> {
     // Port 0 means the OS gives us an unused port
     // Important to use localhost as using 0.0.0.0 leads to users getting brief firewall popups to
     // allow inbound connections on MacOS.
     let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0);
-    let listener = TcpListener::bind(addr).await?;
-    let port = listener.local_addr()?.port();
+    let listener = TcpListener::bind(addr).await.map_err(TcpError::BindError)?;
+    let port = listener
+        .local_addr()
+        .map_err(TcpError::LocalAddrError)?
+        .port();
     Ok(port)
 }
 
 /// Acquire an unused port and lock it for the duration until the sandbox server has
 /// been started.
-async fn acquire_unused_port() -> anyhow::Result<(u16, File)> {
+async fn acquire_unused_port() -> Result<(u16, File), SandboxError> {
     loop {
         let port = pick_unused_port().await?;
         let lockpath = std::env::temp_dir().join(format!("near-sandbox-port{}.lock", port));
-        let lockfile = File::create(lockpath)?;
+        let lockfile = File::create(lockpath).map_err(SandboxError::FileError)?;
         if lockfile.try_lock_exclusive().is_ok() {
             break Ok((port, lockfile));
         }
@@ -57,7 +71,7 @@ pub struct Sandbox {
 
 impl Sandbox {
     /// Start a new sandbox with the default near-sandbox-utils version.
-    pub async fn start_sandbox() -> anyhow::Result<Self> {
+    pub async fn start_sandbox() -> Result<Self, SandboxError> {
         Self::start_sandbox_with_config_and_version(
             SandboxConfig::default(),
             crate::DEFAULT_NEAR_SANDBOX_VERSION,
@@ -70,7 +84,7 @@ impl Sandbox {
     /// # Arguments
     /// * `version` - the version of the near-sandbox-utils to use.
     ///
-    pub async fn start_sandbox_with_version(version: &str) -> anyhow::Result<Self> {
+    pub async fn start_sandbox_with_version(version: &str) -> Result<Self, SandboxError> {
         Self::start_sandbox_with_config_and_version(SandboxConfig::default(), version).await
     }
 
@@ -79,7 +93,7 @@ impl Sandbox {
     /// # Arguments
     /// * `config` - custom configuration for the sandbox
     ///
-    pub async fn start_sandbox_with_config(config: SandboxConfig) -> anyhow::Result<Self> {
+    pub async fn start_sandbox_with_config(config: SandboxConfig) -> Result<Self, SandboxError> {
         Self::start_sandbox_with_config_and_version(config, crate::DEFAULT_NEAR_SANDBOX_VERSION)
             .await
     }
@@ -93,7 +107,7 @@ impl Sandbox {
     pub async fn start_sandbox_with_config_and_version(
         config: SandboxConfig,
         version: &str,
-    ) -> anyhow::Result<Self> {
+    ) -> Result<Self, SandboxError> {
         suppress_sandbox_logs_if_required();
         let home_dir = Self::init_home_dir_with_version(version).await?;
 
@@ -133,18 +147,19 @@ impl Sandbox {
         })
     }
 
-    async fn init_home_dir_with_version(version: &str) -> anyhow::Result<TempDir> {
-        let home_dir = tempfile::tempdir()?;
+    async fn init_home_dir_with_version(version: &str) -> Result<TempDir, SandboxError> {
+        let home_dir = tempfile::tempdir().map_err(SandboxError::FileError)?;
 
         let output = crate::init_with_version(&home_dir, version)?
             .wait_with_output()
-            .await?;
+            .await
+            .map_err(SandboxError::RuntimeError)?;
         info!(target: "sandbox", "sandbox init: {:?}", output);
 
         Ok(home_dir)
     }
 
-    async fn wait_until_ready(rpc: &str) -> anyhow::Result<()> {
+    async fn wait_until_ready(rpc: &str) -> Result<(), SandboxError> {
         let timeout_secs = match std::env::var("NEAR_RPC_TIMEOUT_SECS") {
             Ok(secs) => secs
                 .parse::<u64>()
@@ -160,9 +175,7 @@ impl Sandbox {
                 return Ok(());
             }
         }
-        Err(anyhow::anyhow!(
-            "Sandbox didn't start with the provided timeout"
-        ))
+        Err(SandboxError::TimeoutError)
     }
 }
 

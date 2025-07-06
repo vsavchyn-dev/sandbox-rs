@@ -1,4 +1,3 @@
-use anyhow::{anyhow, Context};
 use binary_install::Cache;
 use fs2::FileExt;
 use tokio::process::{Child, Command};
@@ -16,6 +15,39 @@ pub use high_level::{GenesisAccount, Sandbox, SandboxConfig};
 // Should be updated to the latest release of nearcore.
 // Currently pointing to nearcore@v2.6.3 released on May 16, 2025
 pub const DEFAULT_NEAR_SANDBOX_VERSION: &str = "2.6.3";
+
+#[derive(thiserror::Error, Debug)]
+pub enum SandboxError {
+    #[error("{0}")]
+    SandboxConfigError(#[from] high_level::SandboxConfigError),
+
+    #[error("{0}")]
+    TcpError(#[from] high_level::TcpError),
+
+    #[error("Error while performing r/w opperations on the file: {0}")]
+    FileError(std::io::Error),
+
+    #[error("Runtime error: {0}")]
+    RuntimeError(std::io::Error),
+
+    #[error("Timeout: Sandbox didn't start within provided timeout")]
+    TimeoutError,
+
+    #[error("Error resolving binary: {0}")]
+    BinaryError(String),
+
+    #[error("Download error: {0}")]
+    DownloadError(String),
+
+    #[error("Install error: {0}")]
+    InstallError(String),
+
+    #[error("Verification error: {0}")]
+    SandboxVerificationError(String),
+
+    #[error("Unsupported platform: {0}")]
+    UnsupportedPlatformError(String),
+}
 
 const fn platform() -> Option<&'static str> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -70,11 +102,14 @@ fn download_path(version: &str) -> PathBuf {
 }
 
 /// Returns a path to the binary in the form of {home}/.near/near-sandbox-{version}/near-sandbox
-pub fn bin_path(version: &str) -> anyhow::Result<PathBuf> {
+pub fn bin_path(version: &str) -> Result<PathBuf, SandboxError> {
     if let Ok(path) = std::env::var("NEAR_SANDBOX_BIN_PATH") {
         let path = PathBuf::from(path);
         if !path.exists() {
-            anyhow::bail!("binary {} does not exist", path.display());
+            return Err(SandboxError::BinaryError(format!(
+                "{} does not exists",
+                path.display()
+            )));
         }
         return Ok(path);
     }
@@ -92,7 +127,7 @@ fn normalize_name(input: &str) -> String {
 /// Install the sandbox node given the version, which is either a commit hash or tagged version
 /// number from the nearcore project. Note that commits pushed to master within the latest 12h
 /// will likely not have the binaries made available quite yet.
-pub fn install_with_version(version: &str) -> anyhow::Result<PathBuf> {
+pub fn install_with_version(version: &str) -> Result<PathBuf, SandboxError> {
     if let Some(bin_path) = check_for_version(version)? {
         return Ok(bin_path);
     }
@@ -100,31 +135,35 @@ pub fn install_with_version(version: &str) -> anyhow::Result<PathBuf> {
     // Download binary into temp dir
     let bin_name = format!("near-sandbox-{}", normalize_name(version));
     let dl_cache = Cache::at(&download_path(version));
+    // WARN: How is this checking for unsupported platform?
     let bin_path = bin_url(version).ok_or_else(|| {
-        anyhow!("Unsupported platform: only linux-x86 and darwin-arm are supported")
+        SandboxError::UnsupportedPlatformError(
+            "only linux-x86 and darwing-arm are supported".to_owned(),
+        )
     })?;
     let dl = dl_cache
         .download(true, &bin_name, &["near-sandbox"], &bin_path)
-        .map_err(anyhow::Error::msg)
-        .with_context(|| "unable to download near-sandbox")?
-        .ok_or_else(|| anyhow!("Could not install near-sandbox"))?;
+        .map_err(|e| SandboxError::DownloadError(e.to_string()))?
+        .ok_or_else(|| SandboxError::InstallError("Could not install near-sandbox".to_owned()))?;
 
-    let path = dl.binary("near-sandbox").map_err(anyhow::Error::msg)?;
+    let path = dl
+        .binary("near-sandbox")
+        .map_err(|e| SandboxError::InstallError(e.to_string()))?;
 
     // Move near-sandbox binary to correct location from temp folder.
     let dest = download_path(version).join("near-sandbox");
-    std::fs::rename(path, &dest)?;
+    std::fs::rename(path, &dest).map_err(SandboxError::FileError)?;
 
     Ok(dest)
 }
 
 /// Installs sandbox node with the default version. This is a version that is usually stable
 /// and has landed into mainnet to reflect the latest stable features and fixes.
-pub fn install() -> anyhow::Result<PathBuf> {
+pub fn install() -> Result<PathBuf, SandboxError> {
     ensure_sandbox_bin_with_version(DEFAULT_NEAR_SANDBOX_VERSION)
 }
 
-fn installable(bin_path: &Path) -> anyhow::Result<Option<std::fs::File>> {
+fn installable(bin_path: &Path) -> Result<Option<std::fs::File>, SandboxError> {
     // Sandbox bin already exists
     if bin_path.exists() {
         return Ok(None);
@@ -134,8 +173,8 @@ fn installable(bin_path: &Path) -> anyhow::Result<Option<std::fs::File>> {
     lockpath.set_extension("lock");
 
     // Acquire the lockfile
-    let lockfile = File::create(lockpath)?;
-    lockfile.lock_exclusive()?;
+    let lockfile = File::create(lockpath).map_err(SandboxError::FileError)?;
+    lockfile.lock_exclusive().map_err(SandboxError::FileError)?;
 
     // Check again after acquiring if no one has written to the dest path
     if bin_path.exists() {
@@ -145,20 +184,24 @@ fn installable(bin_path: &Path) -> anyhow::Result<Option<std::fs::File>> {
     }
 }
 
-pub fn ensure_sandbox_bin() -> anyhow::Result<PathBuf> {
+pub fn ensure_sandbox_bin() -> Result<PathBuf, SandboxError> {
     ensure_sandbox_bin_with_version(DEFAULT_NEAR_SANDBOX_VERSION)
 }
 
-pub fn run_with_options(options: &[&str]) -> anyhow::Result<Child> {
+pub fn run_with_options(options: &[&str]) -> Result<Child, SandboxError> {
     let bin_path = crate::ensure_sandbox_bin()?;
     Command::new(&bin_path)
         .args(options)
         .envs(crate::log_vars())
         .spawn()
-        .with_context(|| format!("failed to run sandbox using '{}'", bin_path.display()))
+        .map_err(SandboxError::RuntimeError)
 }
 
-pub fn run(home_dir: impl AsRef<Path>, rpc_port: u16, network_port: u16) -> anyhow::Result<Child> {
+pub fn run(
+    home_dir: impl AsRef<Path>,
+    rpc_port: u16,
+    network_port: u16,
+) -> Result<Child, SandboxError> {
     #[allow(deprecated)]
     run_with_version(
         home_dir,
@@ -168,29 +211,32 @@ pub fn run(home_dir: impl AsRef<Path>, rpc_port: u16, network_port: u16) -> anyh
     )
 }
 
-pub fn init(home_dir: impl AsRef<Path>) -> anyhow::Result<Child> {
+pub fn init(home_dir: impl AsRef<Path>) -> Result<Child, SandboxError> {
     init_with_version(home_dir, DEFAULT_NEAR_SANDBOX_VERSION)
 }
 
-pub fn ensure_sandbox_bin_with_version(version: &str) -> anyhow::Result<PathBuf> {
+pub fn ensure_sandbox_bin_with_version(version: &str) -> Result<PathBuf, SandboxError> {
     let mut bin_path = bin_path(version)?;
     if let Some(lockfile) = installable(&bin_path)? {
         bin_path = install_with_version(version)?;
         println!("Installed near-sandbox into {}", bin_path.to_str().unwrap());
         std::env::set_var("NEAR_SANDBOX_BIN_PATH", bin_path.as_os_str());
-        fs2::FileExt::unlock(&lockfile)?;
+        fs2::FileExt::unlock(&lockfile).map_err(SandboxError::FileError)?;
     }
 
     Ok(bin_path)
 }
 
-pub fn run_with_options_with_version(options: &[&str], version: &str) -> anyhow::Result<Child> {
+pub fn run_with_options_with_version(
+    options: &[&str],
+    version: &str,
+) -> Result<Child, SandboxError> {
     let bin_path = ensure_sandbox_bin_with_version(version)?;
     Command::new(&bin_path)
         .args(options)
         .envs(crate::log_vars())
         .spawn()
-        .with_context(|| format!("failed to run sandbox using '{}'", bin_path.display()))
+        .map_err(SandboxError::RuntimeError)
 }
 
 pub fn run_with_version(
@@ -198,7 +244,7 @@ pub fn run_with_version(
     rpc_port: u16,
     network_port: u16,
     version: &str,
-) -> anyhow::Result<Child> {
+) -> Result<Child, SandboxError> {
     let home_dir = home_dir.as_ref().to_str().unwrap();
 
     run_with_options_with_version(
@@ -216,14 +262,14 @@ pub fn run_with_version(
 }
 
 /// Initialize a sandbox node with the provided version and home directory.
-pub fn init_with_version(home_dir: impl AsRef<Path>, version: &str) -> anyhow::Result<Child> {
+pub fn init_with_version(home_dir: impl AsRef<Path>, version: &str) -> Result<Child, SandboxError> {
     let bin_path = ensure_sandbox_bin_with_version(version)?;
     let home_dir = home_dir.as_ref().to_str().unwrap();
     Command::new(&bin_path)
         .envs(log_vars())
         .args(["--home", home_dir, "init", "--fast"])
         .spawn()
-        .with_context(|| format!("failed to init sandbox using '{}'", bin_path.display()))
+        .map_err(SandboxError::RuntimeError)
 }
 
 fn log_vars() -> Vec<(String, String)> {
@@ -240,7 +286,7 @@ fn log_vars() -> Vec<(String, String)> {
 /// Check if the sandbox version is already downloaded to the bin path.
 /// It does not disambiguate between a commit hash and a tagged version, so it's recommeded to
 /// pick one format and stick to it.
-fn check_for_version(version: &str) -> anyhow::Result<Option<PathBuf>> {
+fn check_for_version(version: &str) -> Result<Option<PathBuf>, SandboxError> {
     // short circuit if we are using the sandbox binary from the environment
     if let Ok(bin_path) = &std::env::var("NEAR_SANDBOX_BIN_PATH") {
         return Ok(Some(PathBuf::from(bin_path)));
