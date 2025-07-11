@@ -10,10 +10,6 @@ use tracing::info;
 
 pub mod config;
 pub use config::{GenesisAccount, SandboxConfig, SandboxConfigError};
-pub use config::{
-    DEFAULT_GENESIS_ACCOUNT, DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY,
-    DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY,
-};
 
 use crate::SandboxError;
 
@@ -66,9 +62,13 @@ async fn acquire_unused_port() -> Result<(u16, File), SandboxError> {
 ///
 /// This is work-in-progress and not all the features are supported yet.
 pub struct Sandbox {
+    /// Home directory for sandbox instance. Will be cleaned up once Sandbox is dropped
     pub home_dir: TempDir,
+    /// URL that can be used to access RPC. In format of `http://{ip_addr}:{port}`
     pub rpc_addr: String,
+    /// File lock preventing other processes from using the same RPC port until this sandbox is dropped
     pub rpc_port_lock: File,
+    /// File lock preventing other processes from using the same network port until this sandbox is dropped
     pub net_port_lock: File,
     process: Child,
 }

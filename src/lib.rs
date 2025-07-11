@@ -11,12 +11,6 @@ pub mod sync;
 // Re-export important types for better user experience
 pub use high_level::{GenesisAccount, Sandbox, SandboxConfig};
 
-// Re-export default constants for better user experience
-pub use high_level::{
-    DEFAULT_GENESIS_ACCOUNT, DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY,
-    DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY,
-};
-
 // The current version of the sandbox node we want to point to.
 // Should be updated to the latest release of nearcore.
 // Currently pointing to nearcore@v2.6.3 released on May 16, 2025
@@ -224,7 +218,6 @@ pub fn ensure_sandbox_bin_with_version(version: &str) -> Result<PathBuf, Sandbox
     let mut bin_path = bin_path(version)?;
     if let Some(lockfile) = installable(&bin_path)? {
         bin_path = install_with_version(version)?;
-        println!("Installed near-sandbox into {}", bin_path.to_str().unwrap());
         std::env::set_var("NEAR_SANDBOX_BIN_PATH", bin_path.as_os_str());
         fs2::FileExt::unlock(&lockfile).map_err(SandboxError::FileError)?;
     }

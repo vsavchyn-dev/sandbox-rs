@@ -37,6 +37,55 @@ pub enum SandboxConfigError {
     EnvParseError(String),
 }
 
+#[cfg(feature = "generate")]
+pub(crate) fn random_account_id() -> String {
+    use rand::Rng;
+
+    let mut rng = rand::thread_rng();
+    let random_num = rng.gen_range(10000000000000usize..99999999999999);
+    let account_id = format!(
+        "sandbox-genesis-dev-acc-{}-{}",
+        chrono::Utc::now().format("%Y%m%d%H%M%S"),
+        random_num
+    );
+
+    account_id
+}
+
+/// Generates pseudo-random base58 encoded ed25519 secret and public keys
+///
+/// WARNING: Prefer using `SecretKey` and `PublicKey` from [`near_crypto`](https://crates.io/crates/near-crypto) or [`near_sandbox_utils::GenesisAccount::generate_random()`](near_sandbox_utils::GenesisAccount::generate_random())
+///
+/// ## Generating random key pair for genesis account:
+/// ```rust,no_run
+/// # fn example() {
+/// let (private_key, public_key) = near_sandbox_utils::random_key_pair();
+/// let custom_genesis = near_sandbox_utils::GenesisAccount {
+///     account_id: "alice",
+///     private_key,
+///     public_key,
+///     ..Default::default()
+/// }
+/// # }
+/// ```
+#[cfg(feature = "generate")]
+pub(crate) fn random_key_pair() -> (String, String) {
+    let mut rng = rand::rngs::OsRng;
+    let signing_key: [u8; ed25519_dalek::KEYPAIR_LENGTH] =
+        ed25519_dalek::SigningKey::generate(&mut rng).to_keypair_bytes();
+
+    let secret_key = format!(
+        "ed25519:{}",
+        bs58::encode(&signing_key.to_vec()).into_string()
+    );
+    let public_key = format!(
+        "ed25519:{}",
+        bs58::encode(&signing_key[ed25519_dalek::SECRET_KEY_LENGTH..].to_vec()).into_string()
+    );
+
+    (secret_key, public_key)
+}
+
 /// Genesis account configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisAccount {
@@ -44,6 +93,24 @@ pub struct GenesisAccount {
     pub public_key: String,
     pub private_key: String,
     pub balance: u128,
+}
+
+#[cfg(feature = "generate")]
+impl GenesisAccount {
+    /// Generates pseudo-random genesis account
+    ///
+    /// WARNING: Prefer using `GenesisAccount::default()` or defining `GenesisAccount` from a
+    /// scratch
+    pub fn generate_random() -> Self {
+        let (private_key, public_key) = random_key_pair();
+
+        Self {
+            account_id: random_account_id(),
+            public_key,
+            private_key,
+            balance: DEFAULT_GENESIS_ACCOUNT_BALANCE,
+        }
+    }
 }
 
 impl Default for GenesisAccount {
