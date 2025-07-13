@@ -14,7 +14,7 @@ This directory contains examples demonstrating how to use the NEAR Sandbox for l
 
 ### Querying default genesis
 
-[`query_default_genesis.rs`] - Demonstrates how to launch the default sandbox configuration and verify genesis state:
+[`query_default_genesis.rs`](./query_default_genesis.rs) - Demonstrates how to launch the default sandbox configuration and verify genesis state:
 
 - Starting a sandbox with default settings
 - Connecting to the sandbox RPC endpoint using near-api-rs

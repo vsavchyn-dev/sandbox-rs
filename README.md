@@ -159,11 +159,11 @@ Customize sandbox behavior with these environment variables:
 
 - `SANDBOX_ARTIFACT_URL`: Override the download link for `neard`. Useful if you have trouble downloading from the default IPFS gateway.
 - `NEAR_RPC_TIMEOUT_SECS`: Set the timeout (in seconds) for waiting for the sandbox to start (default: 10).
-- `NEAR_SANDBOX_BIN_PATH`: Use your own prebuilt `neard-sandbox` binary instead of the default.
+- `NEAR_SANDBOX_BIN_PATH`: Use your own pre-built `neard-sandbox` binary instead of the default. Be careful not to use NodeJs package!
 - `NEAR_ENABLE_SANDBOX_LOG`: Set to `1` to enable sandbox logging of `near-sandbox` (helpful for debugging).
 - `NEAR_SANDBOX_LOG`: Specify custom log levels for the sandbox (forwarded to the `RUST_LOG` environment variable).
 - `NEAR_SANDBOX_LOG_STYLE`: Specify custom log style for the sandbox (forwarded to the `RUST_LOG_STYLE` environment variable).
 
 ## API Reference
 
-Full API documentation is available at [docs.rs/near-sandbox-utils](https://docs.rs/near-sandbox-utils).
+API documentation is available at [docs.rs/near-sandbox-utils](https://docs.rs/near-sandbox-utils).
