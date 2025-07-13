@@ -125,7 +125,7 @@ impl Default for GenesisAccount {
 }
 
 /// Configuration for the sandbox
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SandboxConfig {
     /// Maximum payload size for JSON RPC requests in bytes
     pub max_payload_size: Option<usize>,
@@ -137,6 +137,10 @@ pub struct SandboxConfig {
     pub additional_accounts: Vec<GenesisAccount>,
     /// Additional JSON configuration to merge with the genesis
     pub additional_genesis: Option<Value>,
+    /// Port that RPC will be bound to. Will be picked randomly if not set.
+    pub rpc_port: Option<u16>,
+    /// Port that Network will be bound to. Will be picked randomly if not set.
+    pub net_port: Option<u16>,
 }
 
 /// Overwrite the $home_dir/config.json file over a set of entries. `value` will be used per (key, value) pair

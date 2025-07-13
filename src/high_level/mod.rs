@@ -56,6 +56,32 @@ async fn acquire_unused_port() -> Result<(u16, File), SandboxError> {
     }
 }
 
+/// Try to acquire a specific port and lock it.
+/// Returns the port and lock file if successful.
+async fn try_acquire_specific_port(port: u16) -> Result<(u16, File), SandboxError> {
+    let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
+    let listener = TcpListener::bind(addr).await.map_err(TcpError::BindError)?;
+    let port = listener
+        .local_addr()
+        .map_err(TcpError::LocalAddrError)?
+        .port();
+
+    let lockpath = std::env::temp_dir().join(format!("near-sandbox-port{}.lock", port));
+    let lockfile = File::create(&lockpath).map_err(SandboxError::FileError)?;
+    lockfile
+        .try_lock_exclusive()
+        .map_err(SandboxError::FileError)?;
+
+    Ok((port, lockfile))
+}
+
+async fn acquire_or_lock_port(configured_port: Option<u16>) -> Result<(u16, File), SandboxError> {
+    match configured_port {
+        Some(port) => try_acquire_specific_port(port).await,
+        None => acquire_unused_port().await,
+    }
+}
+
 /// An sandbox instance that can be used to launch local near network to test against.
 ///
 /// All the [examples](https://github.com/near/near-api-rs/tree/main/examples) are using Sandbox implementation.
@@ -64,11 +90,11 @@ async fn acquire_unused_port() -> Result<(u16, File), SandboxError> {
 pub struct Sandbox {
     /// Home directory for sandbox instance. Will be cleaned up once Sandbox is dropped
     pub home_dir: TempDir,
-    /// URL that can be used to access RPC. In format of `http://{ip_addr}:{port}`
+    /// URL that can be used to access RPC. In format of `http://127.0.0.1:{port}`
     pub rpc_addr: String,
-    /// File lock preventing other processes from using the same RPC port until this sandbox is dropped
+    /// File lock preventing other processes from using the same RPC port until this sandbox is started
     pub rpc_port_lock: File,
-    /// File lock preventing other processes from using the same network port until this sandbox is dropped
+    /// File lock preventing other processes from using the same network port until this sandbox is started
     pub net_port_lock: File,
     process: Child,
 }
@@ -115,8 +141,8 @@ impl Sandbox {
         suppress_sandbox_logs_if_required();
         let home_dir = Self::init_home_dir_with_version(version).await?;
 
-        let (rpc_port, rpc_port_lock) = acquire_unused_port().await?;
-        let (net_port, net_port_lock) = acquire_unused_port().await?;
+        let (rpc_port, rpc_port_lock) = acquire_or_lock_port(config.rpc_port).await?;
+        let (net_port, net_port_lock) = acquire_or_lock_port(config.net_port).await?;
 
         let rpc_addr = rpc_socket(rpc_port);
         let net_addr = rpc_socket(net_port);

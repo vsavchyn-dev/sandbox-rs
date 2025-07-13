@@ -17,6 +17,7 @@ async fn main() -> Result<()> {
                 balance: NearToken::from_near(1000).as_yoctonear(),
             },
         ],
+        rpc_port: Some(3030),
         ..Default::default()
     };
 

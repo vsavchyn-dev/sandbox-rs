@@ -6,10 +6,11 @@ This directory contains examples demonstrating how to use the NEAR Sandbox for l
 
 ### Custom Genesis Configuration
 
-[`custom_genesis.rs`](./custom_genesis.rs) - Shows how to customize the sandbox configuration, including:
+[`custom_config.rs`](./custom_config.rs) - Shows how to customize the sandbox configuration, including:
 
 - Extending the genesis configuration with custom settings
 - Adding custom accounts with predefined balances and keys
+- Setting the RPC port to run on
 
 ### Querying default genesis
 
