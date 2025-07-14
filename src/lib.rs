@@ -10,6 +10,9 @@ pub mod sync;
 
 // Re-export important types for better user experience
 pub use high_level::{GenesisAccount, Sandbox, SandboxConfig};
+pub use near_account_id::AccountId;
+pub use near_crypto::{KeyType, PublicKey, SecretKey};
+pub use near_token::NearToken;
 
 // The current version of the sandbox node we want to point to.
 // Should be updated to the latest release of nearcore.

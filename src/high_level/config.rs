@@ -16,6 +16,9 @@ use std::io::{BufReader, Write};
 use std::path::Path;
 use std::str::FromStr;
 
+use near_account_id::AccountId;
+use near_crypto::{PublicKey, SecretKey};
+use near_token::NearToken;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -35,10 +38,13 @@ pub enum SandboxConfigError {
 
     #[error("Invalid environment variables: {0}")]
     EnvParseError(String),
+
+    #[error("Total supply field reached u128 limit")]
+    TotalSupplyOverflow,
 }
 
 #[cfg(feature = "generate")]
-pub(crate) fn random_account_id() -> String {
+pub(crate) fn random_account_id() -> AccountId {
     use rand::Rng;
 
     let mut rng = rand::thread_rng();
@@ -50,49 +56,17 @@ pub(crate) fn random_account_id() -> String {
     );
 
     account_id
-}
-
-/// Generates pseudo-random base58 encoded ed25519 secret and public keys
-///
-/// WARNING: Prefer using `SecretKey` and `PublicKey` from [`near_crypto`](https://crates.io/crates/near-crypto) or [`near_sandbox_utils::GenesisAccount::generate_random()`](near_sandbox_utils::GenesisAccount::generate_random())
-///
-/// ## Generating random key pair for genesis account:
-/// ```rust,no_run
-/// # fn example() {
-/// let (private_key, public_key) = near_sandbox_utils::random_key_pair();
-/// let custom_genesis = near_sandbox_utils::GenesisAccount {
-///     account_id: "alice",
-///     private_key,
-///     public_key,
-///     ..Default::default()
-/// }
-/// # }
-/// ```
-#[cfg(feature = "generate")]
-pub(crate) fn random_key_pair() -> (String, String) {
-    let mut rng = rand::rngs::OsRng;
-    let signing_key: [u8; ed25519_dalek::KEYPAIR_LENGTH] =
-        ed25519_dalek::SigningKey::generate(&mut rng).to_keypair_bytes();
-
-    let secret_key = format!(
-        "ed25519:{}",
-        bs58::encode(&signing_key.to_vec()).into_string()
-    );
-    let public_key = format!(
-        "ed25519:{}",
-        bs58::encode(&signing_key[ed25519_dalek::SECRET_KEY_LENGTH..].to_vec()).into_string()
-    );
-
-    (secret_key, public_key)
+        .parse()
+        .expect("a valid account id len and content")
 }
 
 /// Genesis account configuration
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GenesisAccount {
-    pub account_id: String,
-    pub public_key: String,
-    pub private_key: String,
-    pub balance: u128,
+    pub account_id: AccountId,
+    pub public_key: PublicKey,
+    pub private_key: SecretKey,
+    pub balance: NearToken,
 }
 
 #[cfg(feature = "generate")]
@@ -102,13 +76,13 @@ impl GenesisAccount {
     /// WARNING: Prefer using `GenesisAccount::default()` or defining `GenesisAccount` from a
     /// scratch
     pub fn generate_random() -> Self {
-        let (private_key, public_key) = random_key_pair();
+        let secret_key = near_crypto::SecretKey::from_random(near_crypto::KeyType::ED25519);
 
         Self {
             account_id: random_account_id(),
-            public_key,
-            private_key,
-            balance: DEFAULT_GENESIS_ACCOUNT_BALANCE,
+            public_key: secret_key.public_key(),
+            private_key: secret_key,
+            balance: NearToken::from_yoctonear(DEFAULT_GENESIS_ACCOUNT_BALANCE),
         }
     }
 }
@@ -116,10 +90,10 @@ impl GenesisAccount {
 impl Default for GenesisAccount {
     fn default() -> Self {
         GenesisAccount {
-            account_id: DEFAULT_GENESIS_ACCOUNT.to_string(),
-            public_key: DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY.to_string(),
-            private_key: DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.to_string(),
-            balance: DEFAULT_GENESIS_ACCOUNT_BALANCE,
+            account_id: DEFAULT_GENESIS_ACCOUNT.parse().unwrap(),
+            public_key: DEFAULT_GENESIS_ACCOUNT_PUBLIC_KEY.parse().unwrap(),
+            private_key: DEFAULT_GENESIS_ACCOUNT_PRIVATE_KEY.parse().unwrap(),
+            balance: NearToken::from_yoctonear(DEFAULT_GENESIS_ACCOUNT_BALANCE),
         }
     }
 }
@@ -229,26 +203,30 @@ fn overwrite_genesis(
     let config_reader = BufReader::new(config_file);
     let mut genesis: Value = serde_json::from_reader(config_reader)?;
     let genesis_obj = genesis.as_object_mut().expect("expected to be object");
-    let mut total_supply = u128::from_str(
-        genesis_obj
-            .get_mut("total_supply")
-            .expect("expected exist total_supply")
-            .as_str()
-            .unwrap_or_default(),
-    )
-    .unwrap_or_default();
+    let mut total_supply = NearToken::from_yoctonear(
+        u128::from_str(
+            genesis_obj
+                .get_mut("total_supply")
+                .expect("expected exist total_supply")
+                .as_str()
+                .unwrap_or_default(),
+        )
+        .unwrap_or_default(),
+    );
 
     let mut accounts_to_add = vec![GenesisAccount::default()];
 
     accounts_to_add.extend(config.additional_accounts.clone());
 
     for account in &accounts_to_add {
-        total_supply += account.balance;
+        total_supply = total_supply
+            .checked_add(account.balance)
+            .ok_or(SandboxConfigError::TotalSupplyOverflow)?;
     }
 
     genesis_obj.insert(
         "total_supply".to_string(),
-        Value::String(total_supply.to_string()),
+        Value::String(total_supply.as_yoctonear().to_string()),
     );
 
     let records = genesis_obj
@@ -262,7 +240,7 @@ fn overwrite_genesis(
                 "Account": {
                     "account_id": account.account_id,
                     "account": {
-                    "amount": account.balance.to_string(),
+                    "amount": account.balance.as_yoctonear().to_string(),
                     "locked": "0",
                     "code_hash": "11111111111111111111111111111111",
                     "storage_usage": 182
@@ -291,7 +269,7 @@ fn overwrite_genesis(
 
     let config_file =
         File::create(home_dir.join("genesis.json")).map_err(SandboxConfigError::FileError)?;
-    serde_json::to_writer(config_file, &genesis)?;
+    serde_json::to_writer_pretty(config_file, &genesis)?;
     Ok(())
 }
 
