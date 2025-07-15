@@ -108,6 +108,20 @@ pub struct Sandbox {
 
 impl Sandbox {
     /// Start a new sandbox with the default near-sandbox-utils version.
+    ///
+    /// # Example
+    ///
+    /// ```rust,no_run
+    /// use near_sandbox_utils::*;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Launch with default config and version
+    /// let sandbox = Sandbox::start_sandbox().await?;
+    /// println!("Sandbox RPC endpoint: {}", sandbox.rpc_addr);
+    /// // ... do your testing ...
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn start_sandbox() -> Result<Self, SandboxError> {
         Self::start_sandbox_with_config_and_version(
             SandboxConfig::default(),
@@ -121,6 +135,19 @@ impl Sandbox {
     /// # Arguments
     /// * `version` - the version of the near-sandbox-utils to use.
     ///
+    /// # Exmaple:
+    ///
+    /// ```rust,no_run
+    /// use near_sandbox_utils::*;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// // Launch with default config
+    /// let sandbox = Sandbox::start_sandbox_with_version("2.6.3").await?;
+    /// println!("Sandbox RPC endpoint: {}", sandbox.rpc_addr);
+    /// // ... do your testing ...
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn start_sandbox_with_version(version: &str) -> Result<Self, SandboxError> {
         Self::start_sandbox_with_config_and_version(SandboxConfig::default(), version).await
     }
@@ -130,6 +157,30 @@ impl Sandbox {
     /// # Arguments
     /// * `config` - custom configuration for the sandbox
     ///
+    /// # Example
+    ///
+    /// ``` rust,no_run
+    /// use near_sandbox_utils::*;
+    /// use serde_json::json;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut cfg = SandboxConfig::default();
+    /// cfg.rpc_port = Some(3030);
+    /// cfg.additional_genesis = Some(json!({ "epoch_length": 200 }));
+    /// cfg.additional_accounts = vec![
+    ///     GenesisAccount {
+    ///         account_id: "bob.near".parse().unwrap(),
+    ///         public_key: "ed25519:...".to_string(),
+    ///         private_key: "ed25519:...".to_string(),
+    ///         balance: 10_000u128 * 10u128.pow(24), // 10000 NEAR
+    ///     },
+    /// ];
+    ///
+    /// let sandbox = Sandbox::start_sandbox_with_config(cfg).await?;
+    /// println!("Custom sandbox running at {}", sandbox.rpc_addr);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn start_sandbox_with_config(config: SandboxConfig) -> Result<Self, SandboxError> {
         Self::start_sandbox_with_config_and_version(config, crate::DEFAULT_NEAR_SANDBOX_VERSION)
             .await
@@ -141,6 +192,30 @@ impl Sandbox {
     /// * `config` - custom configuration for the sandbox
     /// * `version` - the version of the near-sandbox-utils to use
     ///
+    /// # Example
+    ///
+    /// ``` rust,no_run
+    /// use near_sandbox_utils::*;
+    /// use serde_json::json;
+    ///
+    /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut cfg = SandboxConfig::default();
+    /// cfg.rpc_port = Some(3030);
+    /// cfg.additional_genesis = Some(json!({ "epoch_length": 200 }));
+    /// cfg.additional_accounts = vec![
+    ///     GenesisAccount {
+    ///         account_id: "bob.near".parse().unwrap(),
+    ///         public_key: "ed25519:...".to_string(),
+    ///         private_key: "ed25519:...".to_string(),
+    ///         balance: 10_000u128 * 10u128.pow(24), // 10000 NEAR
+    ///     },
+    /// ];
+    ///
+    /// let sandbox = Sandbox::start_sandbox_with_config_and_version(cfg, "2.6.3").await?;
+    /// println!("Custom sandbox running at {}", sandbox.rpc_addr);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub async fn start_sandbox_with_config_and_version(
         config: SandboxConfig,
         version: &str,
