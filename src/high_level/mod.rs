@@ -18,11 +18,14 @@ const DEFAULT_RPC_HOST: &str = "127.0.0.1";
 
 #[derive(thiserror::Error, Debug)]
 pub enum TcpError {
-    #[error("Error while binding listener: {0}")]
-    BindError(std::io::Error),
+    #[error("Error while binding listener to a port {0}: {1}")]
+    BindError(u16, std::io::Error),
 
     #[error("Error while getting local address: {0}")]
     LocalAddrError(std::io::Error),
+
+    #[error("Error while locking port file: {0}")]
+    LockingError(std::io::Error),
 }
 
 fn rpc_socket(port: u16) -> String {
@@ -35,7 +38,9 @@ async fn pick_unused_port() -> Result<u16, SandboxError> {
     // Important to use localhost as using 0.0.0.0 leads to users getting brief firewall popups to
     // allow inbound connections on MacOS.
     let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0);
-    let listener = TcpListener::bind(addr).await.map_err(TcpError::BindError)?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| TcpError::BindError(addr.port(), e))?;
     let port = listener
         .local_addr()
         .map_err(TcpError::LocalAddrError)?
@@ -49,7 +54,7 @@ async fn acquire_unused_port() -> Result<(u16, File), SandboxError> {
     loop {
         let port = pick_unused_port().await?;
         let lockpath = std::env::temp_dir().join(format!("near-sandbox-port{}.lock", port));
-        let lockfile = File::create(lockpath).map_err(SandboxError::FileError)?;
+        let lockfile = File::create(lockpath).map_err(TcpError::LockingError)?;
         if lockfile.try_lock_exclusive().is_ok() {
             break Ok((port, lockfile));
         }
@@ -60,17 +65,19 @@ async fn acquire_unused_port() -> Result<(u16, File), SandboxError> {
 /// Returns the port and lock file if successful.
 async fn try_acquire_specific_port(port: u16) -> Result<(u16, File), SandboxError> {
     let addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, port);
-    let listener = TcpListener::bind(addr).await.map_err(TcpError::BindError)?;
+    let listener = TcpListener::bind(addr)
+        .await
+        .map_err(|e| TcpError::BindError(addr.port(), e))?;
     let port = listener
         .local_addr()
         .map_err(TcpError::LocalAddrError)?
         .port();
 
     let lockpath = std::env::temp_dir().join(format!("near-sandbox-port{}.lock", port));
-    let lockfile = File::create(&lockpath).map_err(SandboxError::FileError)?;
+    let lockfile = File::create(&lockpath).map_err(TcpError::LockingError)?;
     lockfile
         .try_lock_exclusive()
-        .map_err(SandboxError::FileError)?;
+        .map_err(TcpError::LockingError)?;
 
     Ok((port, lockfile))
 }
